@@ -1,53 +1,64 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyOutcome, instructionsFor, parseModelResult, responseSchema, validateSelection } from "../speakup-ai.mjs";
+import { classificationPrompt, managerPrompt, parseClassificationResult, parseManagerResult, responseSchema, validateSelection } from "../speakup-ai.mjs";
+import { createScenarioConversation, openingTransition, selectTransition } from "../speakup-controller-v2.mjs";
+import { SCENARIOS } from "../speakup-scenarios.mjs";
 
-test("shared instructions preserve the selected style and prohibit empathy drift", () => {
-  const prompt = instructionsFor({ scenario: "overtime", style: "calm_authority" });
-  assert.match(prompt, /冷靜權威/);
-  assert.match(prompt, /我能理解/);
-});
-
-test("valid structured result is parsed", () => {
-  const result = parseModelResult(JSON.stringify({
-    manager_text: "請說明你明早能完成的具體安排。",
-    termination_reason: "none",
-    ineffective_refusal: false,
-  }));
-  assert.equal(result.termination_reason, "none");
-});
-
-test("role-breaking empathy response is rejected", () => {
-  assert.throws(() => parseModelResult(JSON.stringify({
-    manager_text: "我能理解你的感受，請慢慢說。",
-    termination_reason: "none",
-    ineffective_refusal: false,
-  })));
-});
-
-test("alternative and emotion finish immediately", () => {
-  for (const reason of ["alternative", "emotional_distress"]) {
-    const outcome = applyOutcome({ ineffectiveRefusalCount: 0 }, {
-      manager_text: "本次對話到此為止。",
-      termination_reason: reason,
-      ineffective_refusal: false,
-    });
-    assert.equal(outcome.ended, true);
-    assert.equal(outcome.reason, reason);
+test("each fixed scenario has a manager profile, citations, moves, and employee examples", () => {
+  for (const scenario of Object.values(SCENARIOS)) {
+    assert.ok(scenario.managerProfile.primaryPressureStyle);
+    assert.ok(scenario.realWorldBasis.length >= 2);
+    assert.ok(Object.keys(scenario.managerMoves).length >= 5);
+    assert.ok(Object.keys(scenario.employeeMoves).length >= 5);
   }
 });
 
-test("third ineffective refusal finishes the conversation", () => {
-  let state = { ineffectiveRefusalCount: 0 };
-  for (let turn = 1; turn <= 3; turn += 1) {
-    const outcome = applyOutcome(state, { termination_reason: "none", ineffective_refusal: true });
-    state = outcome;
-    assert.equal(outcome.ended, turn === 3);
+test("classification only accepts the selected scenario's employee moves", () => {
+  assert.deepEqual(parseClassificationResult(JSON.stringify({ employee_moves: ["clear_boundary", "propose_alternative"] }), "overtime"), { employee_moves: ["clear_boundary", "propose_alternative"] });
+  assert.throws(() => parseClassificationResult(JSON.stringify({ employee_moves: ["risk_identified"] }), "overtime"));
+});
+
+test("controller gives overtime a single challenge before resolution", () => {
+  const state = createScenarioConversation({ scenario: "overtime" });
+  assert.equal(openingTransition(state).managerMove, "direct_request");
+  const challenge = selectTransition(state, ["clear_boundary", "propose_alternative"]);
+  assert.equal(challenge.managerMove, "challenge_once");
+  assert.deepEqual(challenge.allowedManagerMoves, ["challenge_once", "responsibility_pressure"]);
+  const resolved = selectTransition(state, ["propose_alternative"]);
+  assert.deepEqual({ move: resolved.managerMove, ended: resolved.ended, outcome: resolved.outcome }, { move: "resolve", ended: true, outcome: "resolved" });
+});
+
+test("deadline requires a trade-off plus priority or alternative before resolution", () => {
+  const state = createScenarioConversation({ scenario: "deadline" });
+  openingTransition(state);
+  assert.equal(selectTransition(state, ["explain_constraint"]).managerMove, "priority_challenge");
+  assert.equal(selectTransition(state, ["identify_tradeoff", "request_priority"]).managerMove, "challenge_once");
+});
+
+test("risky release requires evidence, impact, and an alternative", () => {
+  const state = createScenarioConversation({ scenario: "risky_release" });
+  openingTransition(state);
+  assert.equal(selectTransition(state, ["risk_identified"]).managerMove, "risk_minimization");
+  assert.equal(selectTransition(state, ["provide_evidence"]).managerMove, "request_impact");
+  assert.equal(selectTransition(state, ["provide_evidence", "impact_explained"]).managerMove, "request_mitigation");
+  assert.equal(selectTransition(state, ["canary_plan"]).managerMove, "resolve");
+});
+
+test("concession and distress have controller-owned terminal outcomes", () => {
+  for (const employeeMoves of [["concede"], ["emotional_distress"]]) {
+    const state = createScenarioConversation({ scenario: "overtime" });
+    const transition = selectTransition(state, employeeMoves);
+    assert.equal(transition.ended, true);
   }
 });
 
-test("selection and JSON schema cover both engines", () => {
-  validateSelection({ engine: "perxona_chatbot", scenario: "deadline", style: "results_driven" });
-  validateSelection({ engine: "openai", scenario: "risky_release", style: "aggressive" });
-  assert.deepEqual(responseSchema.required, ["manager_text", "termination_reason", "ineffective_refusal"]);
+test("prompts separate classification from manager language generation", () => {
+  const classification = classificationPrompt({ scenario: "overtime", history: [], employeeText: "我今晚不能留下" });
+  assert.match(classification, /不得判定成功/);
+  const generation = managerPrompt({ scenario: "overtime", allowedManagerMoves: ["group_pressure", "urgency"], fallbackManagerMove: "group_pressure", history: [] });
+  assert.match(generation, /只能從下列允許行為選一個/);
+  assert.deepEqual(responseSchema.required, ["employee_moves"]);
+  assert.equal(parseManagerResult(JSON.stringify({ manager_move: "group_pressure", manager_text: "請先確認你今晚可交接的工作。" }), ["group_pressure", "urgency"]).manager_text, "請先確認你今晚可交接的工作。");
+  assert.throws(() => parseManagerResult(JSON.stringify({ manager_move: "authority_pressure", manager_text: "請先確認你今晚可交接的工作。" }), ["group_pressure"]));
+  validateSelection({ engine: "openai", scenario: "risky_release" });
 });

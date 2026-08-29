@@ -8,7 +8,6 @@ const send = document.querySelector("#send-btn");
 const log = document.querySelector("#chat-log");
 const panel = document.querySelector("#chat");
 const scenarioSelect = document.querySelector("#scenario");
-const styleSelect = document.querySelector("#style");
 const engineSelect = document.querySelector("#engine");
 const launchButton = document.querySelector("#launch-avatar");
 const retryButton = document.querySelector("#retry-btn");
@@ -61,7 +60,7 @@ async function beginConversation() {
   send.disabled = true;
   retryButton.hidden = true;
   const started = await request("/api/speakup/v2/start", {
-    engine: engineSelect.value, scenario: scenarioSelect.value, style: styleSelect.value,
+    engine: engineSelect.value, scenario: scenarioSelect.value,
   });
   conversationId = started.conversationId;
   log.replaceChildren();
@@ -87,7 +86,8 @@ async function beginConversationSafely() {
 const endMessage = {
   alternative: "你已提出可行替代方案，對話結束。",
   emotional_distress: "你已表達不適，對話結束。",
-  ineffective_refusal: "你已三次未能有效拒絕，對話結束。",
+  conceded: "你已接受主管要求，對話結束。",
+  resolved: "已確認可行安排，對話結束。",
 };
 
 presenter.addEventListener("PRESENTER_STATUS", (event) => {
@@ -144,7 +144,7 @@ form.addEventListener("submit", async (event) => {
   input.focus();
 });
 
-for (const control of [scenarioSelect, styleSelect, engineSelect]) {
+for (const control of [scenarioSelect, engineSelect]) {
   control.addEventListener("change", () => {
     if (!panel.hidden) beginConversationSafely();
   });

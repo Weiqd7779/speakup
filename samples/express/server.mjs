@@ -2,15 +2,16 @@ import express from "express";
 import { createConversation, managerStyles, respond, scenarios } from "./speakup-controller.mjs";
 import {
   ENGINES,
-  SCENARIOS as SPEAKUP_SCENARIOS,
-  STYLES as SPEAKUP_STYLES,
-  applyOutcome,
-  parseModelResult,
-  startPrompt,
-  turnPrompt,
+  classificationPrompt,
+  managerPrompt,
+  managerResponseSchema,
+  parseClassificationResult,
+  parseManagerResult,
   validateSelection,
   responseSchema,
 } from "./speakup-ai.mjs";
+import { SCENARIO_IDS } from "./speakup-scenarios.mjs";
+import { createScenarioConversation, openingTransition, selectTransition } from "./speakup-controller-v2.mjs";
 
 // ── Config ──────────────────────────────────────────────────
 
@@ -588,7 +589,7 @@ function openAiKey() {
   return process.env.OPENAI_API_KEY || (LLM_PROVIDER === "openai" ? LLM_API_KEY : undefined);
 }
 
-async function requestOpenAiStructured(prompt) {
+async function requestOpenAiStructured(prompt, schema, name) {
   const key = openAiKey();
   if (!key) throw Object.assign(new Error("找不到 OPENAI_API_KEY。"), { status: 501 });
   const response = await fetch(`${process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"}/responses`, {
@@ -598,7 +599,7 @@ async function requestOpenAiStructured(prompt) {
       model: process.env.SPEAKUP_OPENAI_MODEL ?? "gpt-4o-mini",
       input: prompt,
       store: false,
-      text: { format: { type: "json_schema", name: "speakup_turn", strict: true, schema: responseSchema } },
+      text: { format: { type: "json_schema", name, strict: true, schema } },
     }),
   });
   const payload = await response.json().catch(() => ({}));
@@ -611,24 +612,30 @@ async function requestOpenAiStructured(prompt) {
   return outputText;
 }
 
-async function runSpeakUpEngine(state, prompt) {
-  if (state.engine === "openai") return parseModelResult(await requestOpenAiStructured(prompt));
+async function runSpeakUpEngine(state, prompt, schema, name) {
+  if (state.engine === "openai") return requestOpenAiStructured(prompt, schema, name);
   const chatbotId = await getSpeakUpChatbotId();
   const response = await api.chatWithChatbot(chatbotId, [{
     role: "user", parts: [{ type: "text", text: `SPEAKUP_REQUEST\n${prompt}` }],
   }], CONNECT_SECRET_KEY);
-  return parseModelResult(response.reply_text);
+  return response.reply_text;
 }
 
 app.get("/api/speakup/options", (_req, res) => {
-  res.json({ styles: SPEAKUP_STYLES, scenarios: SPEAKUP_SCENARIOS, engines: ENGINES });
+  res.json({ scenarios: SCENARIO_IDS, engines: ENGINES });
 });
 
 app.post("/api/speakup/v2/start", route(async (req, res) => {
-  const { engine, scenario, style } = req.body ?? {};
-  validateSelection({ engine, scenario, style });
-  const state = { engine, scenario, style, history: [], ineffectiveRefusalCount: 0, ended: false };
-  const opening = await runSpeakUpEngine(state, startPrompt(state));
+  const { engine, scenario } = req.body ?? {};
+  validateSelection({ engine, scenario });
+  const state = { ...createScenarioConversation({ scenario }), engine, history: [] };
+  const transition = openingTransition(state);
+  const opening = parseManagerResult(await runSpeakUpEngine(
+    state,
+    managerPrompt({ scenario, allowedManagerMoves: transition.allowedManagerMoves, fallbackManagerMove: transition.managerMove, history: state.history }),
+    managerResponseSchema,
+    "speakup_manager_response",
+  ), transition.allowedManagerMoves);
   state.history.push({ role: "assistant", text: opening.manager_text });
   const id = crypto.randomUUID();
   speakUpSessions.set(id, state);
@@ -641,12 +648,22 @@ app.post("/api/speakup/v2/:id/message", route(async (req, res) => {
   if (state.ended) { res.status(409).json({ error: "Conversation has ended" }); return; }
   const text = String(req.body?.text ?? "").trim();
   if (!text) { res.status(400).json({ error: "Message is required" }); return; }
-  const result = await runSpeakUpEngine(state, turnPrompt({ ...state, employeeText: text }));
-  const outcome = applyOutcome(state, result);
-  state.ineffectiveRefusalCount = outcome.ineffectiveRefusalCount;
-  state.ended = outcome.ended;
-  state.history.push({ role: "user", text }, { role: "assistant", text: result.manager_text });
-  res.json({ text: result.manager_text, ended: outcome.ended, reason: outcome.reason });
+  const classification = parseClassificationResult(await runSpeakUpEngine(
+    state,
+    classificationPrompt({ scenario: state.scenario, history: state.history, employeeText: text }),
+    responseSchema,
+    "speakup_employee_moves",
+  ), state.scenario);
+  const transition = selectTransition(state, classification.employee_moves);
+  state.history.push({ role: "user", text });
+  const reply = parseManagerResult(await runSpeakUpEngine(
+    state,
+    managerPrompt({ scenario: state.scenario, allowedManagerMoves: transition.allowedManagerMoves, fallbackManagerMove: transition.managerMove, history: state.history }),
+    managerResponseSchema,
+    "speakup_manager_response",
+  ), transition.allowedManagerMoves);
+  state.history.push({ role: "assistant", text: reply.manager_text });
+  res.json({ text: reply.manager_text, ended: transition.ended, reason: transition.outcome, employeeMoves: classification.employee_moves, managerMove: reply.manager_move, allowedManagerMoves: transition.allowedManagerMoves });
 }));
 
 app.post("/api/speakup/start", (req, res) => {

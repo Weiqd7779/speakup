@@ -1,81 +1,46 @@
+import { SCENARIOS, SCENARIO_IDS } from "./speakup-scenarios.mjs";
+
 export const ENGINES = Object.freeze(["perxona_chatbot", "openai"]);
-export const SCENARIOS = Object.freeze(["overtime", "deadline", "risky_release"]);
-export const STYLES = Object.freeze([
-  "calm_authority",
-  "results_driven",
-  "relationship_pressure",
-  "aggressive",
-]);
+// OpenAI strict JSON Schema does not support `uniqueItems`; duplicate labels
+// are normalised by parseClassificationResult after generation instead.
+export const responseSchema = { type: "object", additionalProperties: false, required: ["employee_moves"], properties: { employee_moves: { type: "array", minItems: 1, items: { type: "string" } } } };
+export const managerResponseSchema = { type: "object", additionalProperties: false, required: ["manager_move", "manager_text"], properties: { manager_move: { type: "string" }, manager_text: { type: "string", minLength: 8, maxLength: 50 } } };
 
-const scenarioKnowledge = {
-  overtime: "職場界線、台灣工時與加班原則；有效應對需清楚表達限制並提出可行替代安排。",
-  deadline: "Capacity、Scope/Time/Quality 取捨與優先順序；有效應對需說明限制並提出可交付方案。",
-  risky_release: "測試證據、風險影響、Rollback 與緩解方案；有效應對需提出具體風險與安全替代方案。",
-};
-
-const scenarioOpeners = {
-  overtime: "現在接近下班時間，我需要你留下來完成額外工作。",
-  deadline: "這個功能週五需要上線，Scope 目前不能調整。",
-  risky_release: "這版今天照計畫 Release，剩下的測試之後再處理。",
-};
-
-const styleGuidance = {
-  calm_authority: "冷靜權威：低情緒、高權力、語氣穩定，以責任與隱性後果施壓；不使用安慰式同理。",
-  results_driven: "結果導向：直接、聚焦交付與具體方案，對空泛理由耐受度低；不使用安慰式同理。",
-  relationship_pressure: "團體壓力：以團隊、公平、配合度與群體期待施壓；不使用安慰式同理。",
-  aggressive: "直接對抗：高直接度、快速挑戰與 pushback；禁止歧視、暴力威脅、性羞辱與極端辱罵。",
-};
-
-export const responseSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["manager_text", "termination_reason", "ineffective_refusal"],
-  properties: {
-    manager_text: { type: "string", minLength: 1, maxLength: 50 },
-    termination_reason: {
-      type: "string",
-      enum: ["none", "alternative", "emotional_distress"],
-    },
-    ineffective_refusal: { type: "boolean" },
-  },
-};
-
-export function validateSelection({ engine, scenario, style }) {
+export function validateSelection({ engine, scenario }) {
   if (!ENGINES.includes(engine)) throw new Error("Unsupported conversation engine");
-  if (!SCENARIOS.includes(scenario)) throw new Error("Unsupported scenario");
-  if (!STYLES.includes(style)) throw new Error("Unsupported manager style");
+  if (!SCENARIO_IDS.includes(scenario)) throw new Error("Unsupported scenario");
 }
 
-export function instructionsFor({ scenario, style }) {
-  return `你是 SpeakUp POC 的虛擬主管。全程使用繁體中文。\n\n情境：${scenario}\n知識：${scenarioKnowledge[scenario]}\n主管風格：${styleGuidance[style]}\n\n你必須輸出單一 JSON 物件，不含 Markdown。JSON 欄位必須符合提供的 schema。manager_text 是主管下一句，8–30 個中文字、最多兩句、自然口語且維持所選風格。不得使用「我能理解」、「我理解你的感受」、「你的感受很重要」或「謝謝你願意分享」。\n\n請判斷使用者最新訊息：\n- termination_reason = alternative：使用者提出符合此情境、具體且可行的替代方案。\n- termination_reason = emotional_distress：使用者明確表達不適、壓力、害怕、憤怒、受不了等情緒性發言。\n- ineffective_refusal = true：使用者含糊推託、過度道歉、只解釋原因卻未表達立場，或讓步；否則 false。\n只要 termination_reason 不是 none，manager_text 要以一句專業、非評判性的結束語收尾。`;
+function labelsFor(scenario) {
+  return Object.entries(SCENARIOS[scenario].employeeMoves).map(([label, examples]) => `- ${label}：${examples.join("；")}`).join("\n");
 }
 
-export function startPrompt({ scenario, style }) {
-  return `${instructionsFor({ scenario, style })}\n\n請開始本次對話。主管要先主動提出要求。情境起點：${scenarioOpeners[scenario]}`;
+export function classificationPrompt({ scenario, history, employeeText }) {
+  const transcript = history.map(({ role, text }) => `${role === "user" ? "員工" : "主管"}：${text}`).join("\n");
+  return `你是 SpeakUp POC 的語句分類器。情境是「${SCENARIOS[scenario].label}」。只根據使用者最新訊息，選出所有貼近的 employee_moves。不得判定成功、失敗、主管下一步或結束對話。\n\n可用標籤與例句：\n${labelsFor(scenario)}\n\n既有對話：\n${transcript || "（尚無）"}\n\n使用者最新訊息：${employeeText}`;
 }
 
-export function turnPrompt({ scenario, style, history, employeeText }) {
-  const transcript = history.map(({ role, text }) => `${role === "user" ? "使用者" : "主管"}：${text}`).join("\n");
-  return `${instructionsFor({ scenario, style })}\n\n既有對話：\n${transcript}\n\n使用者最新訊息：${employeeText}`;
+export function managerPrompt({ scenario, allowedManagerMoves, fallbackManagerMove, history }) {
+  const config = SCENARIOS[scenario];
+  const transcript = history.slice(-6).map(({ role, text }) => `${role === "user" ? "員工" : "主管"}：${text}`).join("\n");
+  const moveOptions = allowedManagerMoves.map((move) => `- ${move}：${config.managerMoves[move].join("／")}`).join("\n");
+  return `你是 SpeakUp POC 的虛擬主管，請全程使用自然、專業的台灣職場繁體中文。\n\n固定情境：${config.label}\n主管角色：${config.managerProfile.role}\n主要壓力模式：${config.managerProfile.primaryPressureStyle}\n\n本回合只能從下列允許行為選一個；請依最近對話選最貼近的一個，而不是機械重複 seed：\n${moveOptions}\n若上下文不足，選 ${fallbackManagerMove}。\n\n輸出單一 JSON，包含 chosen manager_move 與 manager_text。manager_text 必須 8–30 個中文字、最多兩句。用一個具體工作錨點（如交接、時程、客戶、scope、測試或風險），回應員工剛說的重點；可以反駁、追問或施壓，但不要重複整段員工原話。除非 manager_move 是 resolve 或 confirm_commitment，主管仍維持原本要求：不得自行同意延期、暫停、縮小範圍或接受替代方案；可以要求員工提出可驗證的條件。禁止歧視、暴力威脅、性羞辱、極端辱罵、捏造法律主張，以及「我能理解」、「我理解你的感受」、「你的感受很重要」、「謝謝你願意分享」等安慰式話術。不得自行結束對話或接受未完成的方案。\n\n最近對話：\n${transcript || "（這是開場）"}`;
 }
 
-export function parseModelResult(raw) {
-  const cleaned = String(raw ?? "").trim().replace(/^```json\s*|\s*```$/g, "");
-  let result;
-  try { result = JSON.parse(cleaned); } catch { throw new Error("引擎未回傳有效的結構化結果。"); }
-  if (!result || typeof result.manager_text !== "string" || !["none", "alternative", "emotional_distress"].includes(result.termination_reason) || typeof result.ineffective_refusal !== "boolean") {
-    throw new Error("引擎回傳的結構化結果不完整。");
-  }
-  if (/我能理解|我理解你的感受|你的感受很重要|謝謝你願意分享/.test(result.manager_text)) {
-    throw new Error("引擎回覆不符合主管風格契約。");
-  }
-  return result;
+function parseJson(raw, errorMessage) {
+  try { return JSON.parse(String(raw ?? "").trim().replace(/^```json\s*|\s*```$/g, "")); } catch { throw new Error(errorMessage); }
 }
 
-export function applyOutcome(state, result) {
-  const ineffectiveRefusalCount = state.ineffectiveRefusalCount + (result.ineffective_refusal ? 1 : 0);
-  const reason = result.termination_reason !== "none"
-    ? result.termination_reason
-    : ineffectiveRefusalCount >= 3 ? "ineffective_refusal" : "none";
-  return { ineffectiveRefusalCount, ended: reason !== "none", reason };
+export function parseClassificationResult(raw, scenario) {
+  const result = parseJson(raw, "引擎未回傳有效的分類結果。");
+  const allowed = new Set(Object.keys(SCENARIOS[scenario].employeeMoves));
+  if (!Array.isArray(result?.employee_moves) || result.employee_moves.length === 0 || result.employee_moves.some((move) => !allowed.has(move))) throw new Error("引擎回傳了不支援的使用者行為標籤。");
+  return { employee_moves: [...new Set(result.employee_moves)] };
+}
+
+export function parseManagerResult(raw, allowedManagerMoves) {
+  const result = parseJson(raw, "引擎未回傳有效的主管回覆。");
+  if (!allowedManagerMoves.includes(result?.manager_move) || typeof result?.manager_text !== "string" || !result.manager_text.trim() || result.manager_text.length > 50) throw new Error("引擎回傳的主管回覆不完整或超出允許策略。");
+  if (/我能理解|我理解你的感受|你的感受很重要|謝謝你願意分享/.test(result.manager_text)) throw new Error("引擎回覆不符合主管角色契約。");
+  return { manager_move: result.manager_move, manager_text: result.manager_text.trim() };
 }
