@@ -1,4 +1,16 @@
 import express from "express";
+import { createConversation, managerStyles, respond, scenarios } from "./speakup-controller.mjs";
+import {
+  ENGINES,
+  SCENARIOS as SPEAKUP_SCENARIOS,
+  STYLES as SPEAKUP_STYLES,
+  applyOutcome,
+  parseModelResult,
+  startPrompt,
+  turnPrompt,
+  validateSelection,
+  responseSchema,
+} from "./speakup-ai.mjs";
 
 // ── Config ──────────────────────────────────────────────────
 
@@ -23,7 +35,8 @@ if (PERXONA_API_BASE_URL && !CONSOLE_REGION_MATCH) {
       "If this organization is in a different region, point PERXONA_API_BASE_URL at a URL containing that region segment.",
   );
 }
-const USE_MOCK = process.env.USE_MOCK === "true";
+const SPEAKUP_LOCAL_ONLY = process.env.SPEAKUP_LOCAL_ONLY === "true";
+const USE_MOCK = process.env.USE_MOCK === "true" || SPEAKUP_LOCAL_ONLY;
 const PRESENTER_URL =
   process.env.PRESENTER_URL ||
   "https://cdn.perxona.ai/prod/latest/widget/entry/presenter.js";
@@ -379,7 +392,11 @@ const connectApi = {
 
 // Select implementation at boot: mock (internal dev only) or real upstream.
 let api;
-if (USE_MOCK) {
+if (SPEAKUP_LOCAL_ONLY) {
+  // Allows the deterministic conversation API to be tested without a Connect
+  // account. It intentionally cannot expose a key or drive an Avatar.
+  api = { checkUpstream: async () => "local" };
+} else if (USE_MOCK) {
   try {
     api = await import("./mocks/upstream.mjs");
   } catch {
@@ -541,6 +558,118 @@ app.use(
   },
 );
 app.use(express.json());
+
+// SpeakUp's conversation state is intentionally client-session scoped for the
+// POC. A production deployment must bind this to an authenticated user/store.
+const speakUpSessions = new Map();
+let speakUpChatbotPromise = null;
+
+const SPEAKUP_CHATBOT_NAME = "SpeakUp POC";
+const SPEAKUP_CHATBOT_INSTRUCTIONS = `你是 SpeakUp POC 的對話引擎。每一個使用者訊息都會附上完整 SPEAKUP_REQUEST 指示。嚴格依該指示回傳單一 JSON 物件；不使用 Markdown，不添加說明文字。`;
+
+async function getSpeakUpChatbotId() {
+  if (USE_MOCK) throw Object.assign(new Error("Perxona Chatbot 在 mock 模式不可用。"), { status: 501 });
+  speakUpChatbotPromise ??= (async () => {
+    const { items = [] } = await api.listChatbots(CONNECT_SECRET_KEY);
+    const existing = items.find(({ name, status }) => name === SPEAKUP_CHATBOT_NAME && status !== "disabled");
+    if (existing?.id) return existing.id;
+    const created = await api.createChatbot({
+      name: SPEAKUP_CHATBOT_NAME,
+      custom_instructions: SPEAKUP_CHATBOT_INSTRUCTIONS,
+      tools: [],
+    }, CONNECT_SECRET_KEY);
+    if (!created?.id) throw new Error("Perxona Chatbot 建立後未回傳 ID。");
+    return created.id;
+  })();
+  try { return await speakUpChatbotPromise; } catch (error) { speakUpChatbotPromise = null; throw error; }
+}
+
+function openAiKey() {
+  return process.env.OPENAI_API_KEY || (LLM_PROVIDER === "openai" ? LLM_API_KEY : undefined);
+}
+
+async function requestOpenAiStructured(prompt) {
+  const key = openAiKey();
+  if (!key) throw Object.assign(new Error("找不到 OPENAI_API_KEY。"), { status: 501 });
+  const response = await fetch(`${process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1"}/responses`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: process.env.SPEAKUP_OPENAI_MODEL ?? "gpt-4o-mini",
+      input: prompt,
+      store: false,
+      text: { format: { type: "json_schema", name: "speakup_turn", strict: true, schema: responseSchema } },
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error("OpenAI 無法產生回覆。"), { status: 502, payload });
+  const outputText = payload.output_text ?? payload.output
+    ?.flatMap((item) => item.content ?? [])
+    .find((item) => item.type === "output_text")
+    ?.text;
+  if (!outputText) throw Object.assign(new Error("OpenAI 未回傳文字結果。"), { status: 502 });
+  return outputText;
+}
+
+async function runSpeakUpEngine(state, prompt) {
+  if (state.engine === "openai") return parseModelResult(await requestOpenAiStructured(prompt));
+  const chatbotId = await getSpeakUpChatbotId();
+  const response = await api.chatWithChatbot(chatbotId, [{
+    role: "user", parts: [{ type: "text", text: `SPEAKUP_REQUEST\n${prompt}` }],
+  }], CONNECT_SECRET_KEY);
+  return parseModelResult(response.reply_text);
+}
+
+app.get("/api/speakup/options", (_req, res) => {
+  res.json({ styles: SPEAKUP_STYLES, scenarios: SPEAKUP_SCENARIOS, engines: ENGINES });
+});
+
+app.post("/api/speakup/v2/start", route(async (req, res) => {
+  const { engine, scenario, style } = req.body ?? {};
+  validateSelection({ engine, scenario, style });
+  const state = { engine, scenario, style, history: [], ineffectiveRefusalCount: 0, ended: false };
+  const opening = await runSpeakUpEngine(state, startPrompt(state));
+  state.history.push({ role: "assistant", text: opening.manager_text });
+  const id = crypto.randomUUID();
+  speakUpSessions.set(id, state);
+  res.status(201).json({ conversationId: id, opening: opening.manager_text });
+}));
+
+app.post("/api/speakup/v2/:id/message", route(async (req, res) => {
+  const state = speakUpSessions.get(req.params.id);
+  if (!state) { res.status(404).json({ error: "Conversation not found" }); return; }
+  if (state.ended) { res.status(409).json({ error: "Conversation has ended" }); return; }
+  const text = String(req.body?.text ?? "").trim();
+  if (!text) { res.status(400).json({ error: "Message is required" }); return; }
+  const result = await runSpeakUpEngine(state, turnPrompt({ ...state, employeeText: text }));
+  const outcome = applyOutcome(state, result);
+  state.ineffectiveRefusalCount = outcome.ineffectiveRefusalCount;
+  state.ended = outcome.ended;
+  state.history.push({ role: "user", text }, { role: "assistant", text: result.manager_text });
+  res.json({ text: result.manager_text, ended: outcome.ended, reason: outcome.reason });
+}));
+
+app.post("/api/speakup/start", (req, res) => {
+  try {
+    const state = createConversation(req.body);
+    const id = crypto.randomUUID();
+    speakUpSessions.set(id, state);
+    res.status(201).json({ conversationId: id, state: { scenario: state.scenario, style: state.style } });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/speakup/:id/message", (req, res) => {
+  const state = speakUpSessions.get(req.params.id);
+  if (!state) return res.status(404).json({ error: "Conversation not found" });
+  try {
+    const response = respond(state, req.body?.text);
+    res.json(response);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
 
 /**
  * Wrap a route handler so any thrown error (an upstream failure surfaced by

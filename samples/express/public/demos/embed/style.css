@@ -67,6 +67,22 @@ body {
   color: var(--muted);
   max-width: 46ch;
 }
+.hero label {
+  display: block;
+  color: var(--muted);
+  margin-top: 1rem;
+}
+.hero select {
+  display: block;
+  width: min(100%, 26rem);
+  margin-top: 0.35rem;
+  padding: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
 .cta-row {
   display: flex;
   gap: 0.6rem;
