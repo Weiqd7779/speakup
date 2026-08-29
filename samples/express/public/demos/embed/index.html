@@ -7,29 +7,37 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <header class="site-header"><a class="logo" href="/">SpeakUp</a><span id="avatar-status">Avatar 載入中</span></header>
-    <main class="page">
-      <section class="hero">
-        <p class="eyebrow">Workplace conversation simulator</p>
-        <h1>在壓力下，練習清楚表達立場。</h1>
-        <p class="lede">每個情境都有固定的主管壓力模式；系統依你的溝通策略決定下一步。提出可行方案、明確表達不適，或接受要求都可能結束對話。</p>
-        <label>情境
-          <select id="scenario"><option value="overtime">臨時加班</option><option value="deadline">不合理 Deadline</option><option value="risky_release">跳過測試 Release</option></select>
-        </label>
-        <label>對話引擎
-          <select id="engine"><option value="perxona_chatbot">Perxona Chatbot</option><option value="openai">OpenAI</option></select>
-        </label>
-        <p id="conversation-status" class="lede">按下按鈕後開啟 Avatar。</p>
-        <button id="launch-avatar" class="send-btn" type="button" disabled>準備 Avatar…</button>
-        <button id="retry-btn" class="cta secondary" type="button" hidden>再試一次</button>
+    <header class="site-header">
+      <a class="logo" href="/">SpeakUp</a>
+      <span id="avatar-status">主管載入中</span>
+    </header>
+
+    <main class="experience">
+      <section class="stage" aria-label="虛擬主管">
+        <sv-presenter></sv-presenter>
+        <div id="stage-loading" class="stage-loading"><span></span><span></span><span></span></div>
+        <div id="stage-error" class="stage-error" hidden></div>
       </section>
-      <aside class="avatar-slot">
-        <div class="stage"><sv-presenter></sv-presenter><div id="stage-loading" class="stage-loading"><span></span><span></span><span></span></div><div id="stage-error" class="stage-error" hidden></div></div>
-        <div id="chat" class="chat" hidden>
-          <ul id="chat-log" class="chat-log"></ul>
-          <form id="chat-form" class="chat-form"><input id="chat-input" class="chat-input" aria-label="輸入回覆" placeholder="輸入你的回覆…" disabled /><button id="send-btn" class="send-btn" type="submit" disabled>送出</button></form>
+
+      <p id="avatar-cue" class="avatar-cue" aria-live="polite">主管狀態：待命</p>
+
+      <aside class="control-panel" aria-label="情境選擇">
+        <p class="control-title">選擇演練情境</p>
+        <div class="scenario-buttons">
+          <button class="scenario-choice is-active" type="button" data-scenario="overtime" aria-pressed="true">臨時加班</button>
+          <button class="scenario-choice" type="button" data-scenario="deadline" aria-pressed="false">不合理 Deadline</button>
+          <button class="scenario-choice" type="button" data-scenario="risky_release" aria-pressed="false">跳過測試 Release</button>
         </div>
+        <p id="conversation-status" class="conversation-status">選擇情境後開始對話。</p>
       </aside>
+
+      <section id="chat" class="chat" hidden aria-label="對話">
+        <ul id="chat-log" class="chat-log"></ul>
+        <form id="chat-form" class="chat-form">
+          <input id="chat-input" class="chat-input" aria-label="輸入回覆" placeholder="輸入你的回覆…" disabled />
+          <button id="send-btn" class="send-btn" type="submit" disabled>送出</button>
+        </form>
+      </section>
     </main>
     <script type="module" src="app.js"></script>
   </body>

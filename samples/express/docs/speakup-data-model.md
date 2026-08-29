@@ -27,6 +27,19 @@
 
 三者共同的終止條件是 `concede` 與 `emotional_distress`。只有 `speakup-controller-v2.mjs` 可以設定 outcome；模型回傳的 JSON 不含 outcome 或 termination 欄位。Controller 每回合提供 1–3 個 `allowedManagerMoves`，LLM 可依上下文在集合中選擇策略並生成台詞；後端會拒絕集合以外的策略。這讓語言與微策略自然變化，同時保留成功條件、壓力上限與安全邊界。
 
+## 主管風格（語言層）
+
+使用者可在固定情境之外選擇一種措辭風格；它不改變 manager move、轉移規則或結案條件。
+
+| Style | 說話方式 | 邊界 |
+| --- | --- | --- |
+| `soft_group_pressure` | 克制、合作表象下訴諸團隊補位、共同責任與其他人的投入。 | 不做人身攻擊或明示懲罰。 |
+| `aggressive_consequence` | 直接質疑能力、可靠性與責任，並用考績、升遷、職務調整、續任、向上回報、去留等後果施壓；可帶尖銳責備與公開歸責感。 | 後果必須與目前工作有關；不產生特定身分歧視、性羞辱或肢體暴力恐嚇。 |
+
+風格指引會連同情境、歷史和 `allowedManagerMoves` 傳入 LLM。後端僅接受這兩個 style id，並由 controller 繼續控制成功、失敗與結束。
+
+侵略型不共用一句泛用威脅。每個 scenario 另提供三句「口語錨點」供 LLM 自然改寫：S1 是配合度、留下收尾與團隊交接；S2 是期限、交付卡點與上級交代；S3 是阻擋證據、專業判斷與 rollback 責任。這些錨點只控制口吻和壓力焦點，不能讓模型越過 controller 指定的 manager move。
+
 ## 資料來源
 
 - [勞動基準法第 32 條](https://laws.mol.gov.tw/FLAW/PrintFLAWDOC01.aspx?flno=32&id=FL014930) 與 [勞動部企業防制強迫勞動參考指引](https://www.mol.gov.tw/media/c3mj2nmw/%E9%99%84%E4%BB%B6_%E4%BC%81%E6%A5%AD%E9%98%B2%E5%88%B6%E5%BC%B7%E8%BF%AB%E5%8B%9E%E5%8B%95%E5%8F%83%E8%80%83%E6%8C%87%E5%BC%95.pdf?mediaDL=true)：S1 的工時與拒絕加班背景。

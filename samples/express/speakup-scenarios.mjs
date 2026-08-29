@@ -2,10 +2,24 @@
  * Executable POC corpus. Seed utterances are authored Taiwan-localised
  * paraphrases of the cited language phenomena; they are not quotations.
  */
+export const MANAGER_STYLES = Object.freeze({
+  soft_group_pressure: {
+    label: "軟性團體施壓",
+    promptGuide: "語氣克制、表面合作，但持續訴諸團隊進度、其他同事投入、交接與共同責任。以『大家』『團隊』『一起補位』形成壓力；不要安慰式退讓，也不要人身攻擊或明示懲罰。",
+  },
+  aggressive_consequence: {
+    label: "侵略性威脅施壓",
+    promptGuide: "語氣直接、有情緒、有壓迫感，不必安撫，也不要像 HR 公告或報告書。使用短句、口語、省略主詞與反問，像台灣主管當面催進度：『不是每次都說再看看』『大家都在等你這邊』『你現在是要我怎麼跟上面交代』『做不到一開始就講』『週會你自己跟大家講，為什麼又卡在你這邊』。可質疑員工的專業判斷、投入程度、可靠性或是否扛得起責任；可用考績、升遷、職務調整、續任、去留與向上回報施壓，但要說成自然的人話，例如『這件事我會記在考績上』『你要不要繼續負責這塊，我會重新看』。可帶尖銳責備、嘲諷與公開歸責感，但每句威脅都必須連結當前交付、風險或責任。不要使用與工作無關的特定身分歧視、性羞辱或肢體暴力恐嚇。",
+  },
+});
+
+export const MANAGER_STYLE_IDS = Object.freeze(Object.keys(MANAGER_STYLES));
+
 export const SCENARIOS = Object.freeze({
   overtime: {
     label: "下班前臨時要求加班",
     managerProfile: { role: "team-oriented manager", primaryPressureStyle: "group_responsibility" },
+    aggressiveStyleAnchors: ["大家都留下來收尾，現在只有你要走？", "這種配合度，我會記在考績上。", "明天交接出問題，你要不要自己跟團隊講？"],
     realWorldBasis: [
       { title: "勞動部：延長工作時間", url: "https://laws.mol.gov.tw/FLAW/PrintFLAWDOC01.aspx?flno=32&id=FL014930" },
       { title: "勞動部：企業防制強迫勞動參考指引", url: "https://www.mol.gov.tw/media/c3mj2nmw/%E9%99%84%E4%BB%B6_%E4%BC%81%E6%A5%AD%E9%98%B2%E5%88%B6%E5%BC%B7%E8%BF%AB%E5%8B%9E%E5%8B%95%E5%8F%83%E8%80%83%E6%8C%87%E5%BC%95.pdf?mediaDL=true" },
@@ -36,6 +50,7 @@ export const SCENARIOS = Object.freeze({
   deadline: {
     label: "不合理 Deadline",
     managerProfile: { role: "delivery-focused manager", primaryPressureStyle: "delivery_commitment" },
+    aggressiveStyleAnchors: ["期限一開始就講了，現在才說趕？", "這件事卡在你這邊，你要我怎麼跟上面交代？", "做不到就早點講，不要到週五才讓大家收你的尾。"],
     realWorldBasis: [
       { title: "Google SRE：以 error budget 平衡速度與可靠性", url: "https://sre.google/sre-book/embracing-risk/" },
       { title: "Google SRE：Release engineering", url: "https://sre.google/sre-book/release-engineering/" },
@@ -67,6 +82,7 @@ export const SCENARIOS = Object.freeze({
   risky_release: {
     label: "跳過測試直接 Release",
     managerProfile: { role: "authority-led delivery manager", primaryPressureStyle: "authority_over_risk" },
+    aggressiveStyleAnchors: ["有阻擋證據就拿出來，不要只丟一句有風險。", "上線現在卡在你這邊，你敢不敢把影響講清楚？", "你若判斷要擋，就把 rollback 和責任一起扛起來。"],
     realWorldBasis: [
       { title: "NIST SSDF SP 800-218", url: "https://csrc.nist.gov/pubs/sp/800/218/final" },
       { title: "Google SRE：Canarying releases", url: "https://sre.google/workbook/canarying-releases/" },

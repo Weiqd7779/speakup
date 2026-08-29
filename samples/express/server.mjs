@@ -10,7 +10,7 @@ import {
   validateSelection,
   responseSchema,
 } from "./speakup-ai.mjs";
-import { SCENARIO_IDS } from "./speakup-scenarios.mjs";
+import { MANAGER_STYLE_IDS, SCENARIO_IDS } from "./speakup-scenarios.mjs";
 import { createScenarioConversation, openingTransition, selectTransition } from "./speakup-controller-v2.mjs";
 
 // ── Config ──────────────────────────────────────────────────
@@ -622,24 +622,24 @@ async function runSpeakUpEngine(state, prompt, schema, name) {
 }
 
 app.get("/api/speakup/options", (_req, res) => {
-  res.json({ scenarios: SCENARIO_IDS, engines: ENGINES });
+  res.json({ scenarios: SCENARIO_IDS, engines: ENGINES, managerStyles: MANAGER_STYLE_IDS });
 });
 
 app.post("/api/speakup/v2/start", route(async (req, res) => {
-  const { engine, scenario } = req.body ?? {};
-  validateSelection({ engine, scenario });
-  const state = { ...createScenarioConversation({ scenario }), engine, history: [] };
+  const { engine, scenario, managerStyle = "soft_group_pressure" } = req.body ?? {};
+  validateSelection({ engine, scenario, managerStyle });
+  const state = { ...createScenarioConversation({ scenario }), engine, managerStyle, history: [] };
   const transition = openingTransition(state);
   const opening = parseManagerResult(await runSpeakUpEngine(
     state,
-    managerPrompt({ scenario, allowedManagerMoves: transition.allowedManagerMoves, fallbackManagerMove: transition.managerMove, history: state.history }),
+    managerPrompt({ scenario, managerStyle: state.managerStyle, allowedManagerMoves: transition.allowedManagerMoves, fallbackManagerMove: transition.managerMove, history: state.history }),
     managerResponseSchema,
     "speakup_manager_response",
   ), transition.allowedManagerMoves);
   state.history.push({ role: "assistant", text: opening.manager_text });
   const id = crypto.randomUUID();
   speakUpSessions.set(id, state);
-  res.status(201).json({ conversationId: id, opening: opening.manager_text });
+  res.status(201).json({ conversationId: id, opening: opening.manager_text, managerStyle: state.managerStyle });
 }));
 
 app.post("/api/speakup/v2/:id/message", route(async (req, res) => {
@@ -658,12 +658,12 @@ app.post("/api/speakup/v2/:id/message", route(async (req, res) => {
   state.history.push({ role: "user", text });
   const reply = parseManagerResult(await runSpeakUpEngine(
     state,
-    managerPrompt({ scenario: state.scenario, allowedManagerMoves: transition.allowedManagerMoves, fallbackManagerMove: transition.managerMove, history: state.history }),
+    managerPrompt({ scenario: state.scenario, managerStyle: state.managerStyle, allowedManagerMoves: transition.allowedManagerMoves, fallbackManagerMove: transition.managerMove, history: state.history }),
     managerResponseSchema,
     "speakup_manager_response",
   ), transition.allowedManagerMoves);
   state.history.push({ role: "assistant", text: reply.manager_text });
-  res.json({ text: reply.manager_text, ended: transition.ended, reason: transition.outcome, employeeMoves: classification.employee_moves, managerMove: reply.manager_move, allowedManagerMoves: transition.allowedManagerMoves });
+  res.json({ text: reply.manager_text, ended: transition.ended, reason: transition.outcome, employeeMoves: classification.employee_moves, managerMove: reply.manager_move, managerStyle: state.managerStyle, allowedManagerMoves: transition.allowedManagerMoves });
 }));
 
 app.post("/api/speakup/start", (req, res) => {

@@ -1,4 +1,5 @@
 /** SpeakUp POC: Perxona avatar + switchable AI manager conversation. */
+import { avatarCueFor } from "./avatar-cues.js";
 
 /** @type {HTMLElement & import('@perxona/presenter-types').IPresentationWidget} */
 const presenter = document.querySelector("sv-presenter");
@@ -7,12 +8,16 @@ const input = document.querySelector("#chat-input");
 const send = document.querySelector("#send-btn");
 const log = document.querySelector("#chat-log");
 const panel = document.querySelector("#chat");
-const scenarioSelect = document.querySelector("#scenario");
-const engineSelect = document.querySelector("#engine");
-const launchButton = document.querySelector("#launch-avatar");
-const retryButton = document.querySelector("#retry-btn");
+const cueStatus = document.querySelector("#avatar-cue");
+const status = document.querySelector("#conversation-status");
+const scenarioButtons = [...document.querySelectorAll(".scenario-choice")];
+const DEFAULT_ENGINE = "openai";
+const DEFAULT_MANAGER_STYLE = "aggressive_consequence";
+let activeScenario = "overtime";
 let conversationId = null;
 let audioUnlocked = false;
+let avatarReady = false;
+let avatarStarting = false;
 
 async function request(path, body) {
   const res = await fetch(path, body ? {
@@ -58,16 +63,30 @@ async function withTimeout(operation, milliseconds, label) {
 async function beginConversation() {
   input.disabled = true;
   send.disabled = true;
-  retryButton.hidden = true;
   const started = await request("/api/speakup/v2/start", {
-    engine: engineSelect.value, scenario: scenarioSelect.value,
+    engine: DEFAULT_ENGINE, scenario: activeScenario, managerStyle: DEFAULT_MANAGER_STYLE,
   });
   conversationId = started.conversationId;
   log.replaceChildren();
   input.disabled = false;
   send.disabled = false;
-  document.querySelector("#conversation-status").textContent = "對話進行中";
+  status.textContent = "對話進行中";
   append("assistant", started.opening);
+  await presentManager(started.opening, { managerMove: "direct_request", managerStyle: started.managerStyle });
+}
+
+async function presentManager(text, { managerMove, managerStyle }) {
+  const cue = avatarCueFor({ managerMove, managerStyle });
+  cueStatus.textContent = `主管狀態：${cue.label}`;
+  // Keep the speech request free of body-motion markup: Connect can then attach
+  // its high-intensity facial expression. The selected body motion is dispatched
+  // alongside it, so gesture control does not suppress the face performance.
+  const [result, motionResult] = await Promise.all([
+    presenter.present(text, { emotion: cue.emotion, intensity: cue.intensity }),
+    presenter.playMotion?.(cue.motionId),
+  ]);
+  if (!result?.success) console.error("Avatar speech failed", result);
+  if (motionResult && !motionResult.success) console.error("Avatar motion failed", motionResult);
 }
 
 async function beginConversationSafely() {
@@ -77,8 +96,7 @@ async function beginConversationSafely() {
     conversationId = null;
     log.replaceChildren();
     append("error", "此引擎暫時無法回應，請再試一次。 ");
-    document.querySelector("#conversation-status").textContent = "引擎無法啟動";
-    retryButton.hidden = false;
+    status.textContent = "對話暫時無法啟動，請重新選擇情境。";
     console.error(error);
   }
 }
@@ -95,6 +113,7 @@ presenter.addEventListener("PRESENTER_STATUS", (event) => {
   if (event.detail?.status !== "Ready") return;
   document.querySelector("#stage-loading")?.remove();
   document.querySelector("#avatar-status").textContent = "Avatar 已開啟";
+  avatarReady = true;
   panel.hidden = false;
   beginConversationSafely();
 });
@@ -119,24 +138,27 @@ form.addEventListener("submit", async (event) => {
   input.disabled = true;
   send.disabled = true;
   append("user", text);
+  presenter.setListening?.(true);
   try {
     if (!audioUnlocked) {
       await presenter.resumeAudioPlayback?.();
       audioUnlocked = true;
     }
+    presenter.setListening?.(false);
+    presenter.setThinking?.(true);
     const reply = await request(`/api/speakup/v2/${conversationId}/message`, { text });
     append("assistant", reply.text);
     presenter.setThinking?.(false);
-    const result = await presenter.present(reply.text);
-    if (!result?.success) console.error("Avatar speech failed", result);
+    await presentManager(reply.text, reply);
     if (reply.ended) {
-      document.querySelector("#conversation-status").textContent = endMessage[reply.reason] ?? "對話已結束";
-      retryButton.hidden = false;
+      status.textContent = `${endMessage[reply.reason] ?? "對話已結束"} 可從左下選擇情境重新演練。`;
       return;
     }
   } catch (error) {
+    presenter.setListening?.(false);
+    presenter.setThinking?.(false);
     append("error", "此引擎暫時無法回應，請再試一次。 ");
-    retryButton.hidden = false;
+    status.textContent = "回應暫時無法送出，請再試一次。";
     console.error(error);
   }
   input.disabled = false;
@@ -144,12 +166,14 @@ form.addEventListener("submit", async (event) => {
   input.focus();
 });
 
-for (const control of [scenarioSelect, engineSelect]) {
-  control.addEventListener("change", () => {
-    if (!panel.hidden) beginConversationSafely();
-  });
+function setActiveScenario(scenario) {
+  activeScenario = scenario;
+  for (const button of scenarioButtons) {
+    const isActive = button.dataset.scenario === scenario;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  }
 }
-retryButton.addEventListener("click", beginConversationSafely);
 
 async function prepare() {
   const config = await request("/api/config");
@@ -162,13 +186,12 @@ async function prepare() {
 let presenterConfig = null;
 prepare().then((config) => {
   presenterConfig = config;
-  launchButton.disabled = false;
-  launchButton.textContent = "開始 Avatar";
 }).catch(showError);
 
-launchButton.addEventListener("click", async () => {
+async function launchAvatar() {
+  if (avatarStarting || avatarReady || !presenterConfig) return;
+  avatarStarting = true;
   if (!presenterConfig) return;
-  launchButton.disabled = true;
   try {
     // Connect's handbook requires both calls to originate in a user gesture.
     document.querySelector("#avatar-status").textContent = "正在解鎖音訊…";
@@ -181,7 +204,19 @@ launchButton.addEventListener("click", async () => {
       "Avatar 初始化",
     );
   } catch (error) {
-    launchButton.disabled = false;
     showError(error);
+  } finally {
+    avatarStarting = false;
   }
-});
+}
+
+for (const button of scenarioButtons) {
+  button.addEventListener("click", async () => {
+    setActiveScenario(button.dataset.scenario);
+    if (avatarReady) {
+      await beginConversationSafely();
+      return;
+    }
+    await launchAvatar();
+  });
+}

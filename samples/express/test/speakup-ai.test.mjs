@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { classificationPrompt, managerPrompt, parseClassificationResult, parseManagerResult, responseSchema, validateSelection } from "../speakup-ai.mjs";
 import { createScenarioConversation, openingTransition, selectTransition } from "../speakup-controller-v2.mjs";
-import { SCENARIOS } from "../speakup-scenarios.mjs";
+import { MANAGER_STYLES, SCENARIOS } from "../speakup-scenarios.mjs";
 
 test("each fixed scenario has a manager profile, citations, moves, and employee examples", () => {
   for (const scenario of Object.values(SCENARIOS)) {
@@ -10,6 +10,7 @@ test("each fixed scenario has a manager profile, citations, moves, and employee 
     assert.ok(scenario.realWorldBasis.length >= 2);
     assert.ok(Object.keys(scenario.managerMoves).length >= 5);
     assert.ok(Object.keys(scenario.employeeMoves).length >= 5);
+    assert.equal(scenario.aggressiveStyleAnchors.length, 3);
   }
 });
 
@@ -55,10 +56,16 @@ test("concession and distress have controller-owned terminal outcomes", () => {
 test("prompts separate classification from manager language generation", () => {
   const classification = classificationPrompt({ scenario: "overtime", history: [], employeeText: "我今晚不能留下" });
   assert.match(classification, /不得判定成功/);
-  const generation = managerPrompt({ scenario: "overtime", allowedManagerMoves: ["group_pressure", "urgency"], fallbackManagerMove: "group_pressure", history: [] });
+  const generation = managerPrompt({ scenario: "overtime", managerStyle: "aggressive_consequence", allowedManagerMoves: ["group_pressure", "urgency"], fallbackManagerMove: "group_pressure", history: [] });
   assert.match(generation, /只能從下列允許行為選一個/);
+  assert.match(generation, /侵略性威脅施壓/);
+  assert.match(generation, /這件事我會記在考績上/);
+  assert.match(generation, /週會你自己跟大家講/);
+  assert.match(generation, /大家都留下來收尾/);
   assert.deepEqual(responseSchema.required, ["employee_moves"]);
   assert.equal(parseManagerResult(JSON.stringify({ manager_move: "group_pressure", manager_text: "請先確認你今晚可交接的工作。" }), ["group_pressure", "urgency"]).manager_text, "請先確認你今晚可交接的工作。");
   assert.throws(() => parseManagerResult(JSON.stringify({ manager_move: "authority_pressure", manager_text: "請先確認你今晚可交接的工作。" }), ["group_pressure"]));
-  validateSelection({ engine: "openai", scenario: "risky_release" });
+  validateSelection({ engine: "openai", scenario: "risky_release", managerStyle: "soft_group_pressure" });
+  assert.throws(() => validateSelection({ engine: "openai", scenario: "risky_release", managerStyle: "invented_style" }));
+  assert.deepEqual(Object.keys(MANAGER_STYLES), ["soft_group_pressure", "aggressive_consequence"]);
 });
